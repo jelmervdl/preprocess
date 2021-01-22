@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <iomanip>
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/parsers.hpp>
@@ -20,6 +21,92 @@
 
 namespace preprocess {
 namespace {
+
+class NameTemplate {
+  public:
+    NameTemplate(std::string const &tpl) {
+      //Find the last X
+      std::size_t end = tpl.find_last_of('X');
+      std::size_t start = end;
+
+      UTIL_THROW_IF(end == std::string::npos, util::Exception, "There are no X-es in the template name.");
+
+      // Move cur to the first X of that sequence
+      while (start > 0 && tpl[start-1] == 'X')
+        --start;
+
+      prefix_ = tpl.substr(0, start);
+      suffix_ = tpl.substr(end + 1);
+      padding_ = 1 + end - start;
+    }
+
+    std::string Format(std::size_t n) const {
+      std::ostringstream formatted;
+      formatted << prefix_ << std::setfill('0') << std::setw(padding_) << n << suffix_;
+      return formatted.str();
+    }
+  private:
+    std::string prefix_;
+    std::string suffix_;
+    std::size_t padding_;
+};
+
+// Wrapper around FileStream that writes at most bytes_limit bytes per file
+// before moving to the next. Shares the "same" write(void*,size_t) interface.
+// The file template name is in the format of nameXXX where all X-es are
+// replaced by the file number with padding zeros. The X-es have to be at the
+// end of the name.
+class SplitFileStream {
+  public:
+    explicit SplitFileStream(const std::string &tpl, std::size_t bytes_limit, std::size_t buffer_size = 8192)
+    : tpl_(tpl),
+      bytes_limit_(bytes_limit),
+      file_n_(0),
+      file_fd_(),
+      bytes_written_(0),
+      file_stream_(-1, buffer_size) {
+        
+    }
+
+    SplitFileStream(SplitFileStream &&from) noexcept
+    : tpl_(std::move(from.tpl_)),
+      bytes_limit_(from.bytes_limit_),
+      file_n_(from.file_n_),
+      file_fd_(std::move(from.file_fd_)),
+      bytes_written_(from.bytes_written_),
+      file_stream_(std::move(from.file_stream_)) {
+        //
+    }
+
+    // Lower case "write" so it has the same interface as util::FileStream.
+    SplitFileStream &write(const void *data, std::size_t length) {
+      // If first write, or write that pushes us over the limit
+      if (file_fd_.get() == -1 || bytes_written_ + length > bytes_limit_)
+        OpenNext();
+
+      file_stream_.write(data, length);
+      bytes_written_ += length;
+
+      return *this;
+    }
+  private:
+    void OpenNext() {
+      std::string filename(tpl_.Format(file_n_++));
+      int fd = util::CreateOrThrow(filename.c_str());
+      file_stream_.SetFD(fd);
+
+      file_fd_.reset(fd); // Closes old file, hence call after SetFD which might flush.
+      bytes_written_ = 0;
+    }
+
+    NameTemplate tpl_;
+    std::size_t bytes_limit_;
+    std::size_t file_n_;
+    util::scoped_fd file_fd_;
+    std::size_t bytes_written_;
+
+    util::FileStream file_stream_; // Should be destroyed before file_fd_
+};
 
 // Thread to read from queue and dump to a worker.  Steals process_in.
 void InputToProcess(util::PCQueue<std::string> *queue, int process_in) {
@@ -34,7 +121,7 @@ void InputToProcess(util::PCQueue<std::string> *queue, int process_in) {
 }
 
 // Thread to write from a worker to output.  Steals process_out.
-void OutputFromProcess(bool compress, int process_out, util::FileStream *out, std::mutex *out_mutex) {
+template <class OutStream>  void OutputFromProcess(bool compress, int process_out, OutStream *out, std::mutex *out_mutex) {
   WARCReader reader(process_out);
   std::string str;
   if (compress) {
@@ -42,12 +129,12 @@ void OutputFromProcess(bool compress, int process_out, util::FileStream *out, st
     while (reader.Read(str)) {
       util::GZCompress(str, compressed);
       std::lock_guard<std::mutex> guard(*out_mutex);
-      *out << compressed;
+      out->write(compressed.data(), compressed.size());
     }
   } else {
     while (reader.Read(str)) {
       std::lock_guard<std::mutex> guard(*out_mutex);
-      *out << str;
+      out->write(str.data(), str.size());
     }
   }
 }
@@ -62,13 +149,13 @@ void ReadInput(int from, util::PCQueue<std::string> *queue) {
 }
 
 // A child process going from WARC to WARC.
-class Worker {
+template <class OutStream> class Worker {
   public:
-    Worker(util::PCQueue<std::string> &in, util::FileStream &out, std::mutex &out_mutex, bool compress, char *argv[]) {
+    Worker(util::PCQueue<std::string> &in, OutStream &out, std::mutex &out_mutex, bool compress, char *argv[]) {
       util::scoped_fd in_file, out_file;
       Launch(argv, in_file, out_file);
       input_ = std::thread(InputToProcess, &in, in_file.release());
-      output_ = std::thread(OutputFromProcess, compress, out_file.release(), &out, &out_mutex);
+      output_ = std::thread(OutputFromProcess<OutStream>, compress, out_file.release(), &out, &out_mutex);
     }
 
     void Join() {
@@ -95,9 +182,9 @@ void ChildReaper(std::size_t expect) {
   }
 }
 
-class WorkerPool {
+template <class OutStream> class WorkerPool {
   public:
-    WorkerPool(std::size_t number, util::FileStream &out, bool compress, char *argv[]) : in_(number), workers_(number) {
+    WorkerPool(std::size_t number, OutStream &out, bool compress, char *argv[]) : in_(number), workers_(number) {
       for (std::size_t i = 0; i < number; ++i) {
         workers_.push_back(in_, out, out_mutex_, compress, argv);
       }
@@ -112,7 +199,7 @@ class WorkerPool {
       for (std::size_t i = 0; i < workers_.size(); ++i) {
         in_.Produce(str);
       }
-      for (Worker &i : workers_) {
+      for (Worker<OutStream> &i : workers_) {
         i.Join();
       }
       child_reaper_.join();
@@ -121,7 +208,7 @@ class WorkerPool {
   private:
     util::PCQueue<std::string> in_;
     std::mutex out_mutex_;
-    util::FixedArray<Worker> workers_;
+    util::FixedArray<Worker<OutStream>> workers_;
 
     std::thread child_reaper_;
 };
@@ -129,6 +216,8 @@ class WorkerPool {
 struct Options {
   std::vector<std::string> inputs;
   std::size_t workers;
+  std::string output;
+  std::size_t bytes;
   bool compress;
 };
 
@@ -138,8 +227,10 @@ void ParseBoostArgs(int restricted_argc, int real_argc, char *argv[], Options &o
   desc.add_options()
     ("help,h", po::bool_switch(), "Show this help message")
     ("inputs,i", po::value(&out.inputs)->multitoken(), "Input files, which will be read in parallel and jumbled together.  Default: read from stdin.")
+    ("output,o", po::value(&out.output), "Output filename or prefix if --bytes is used.")
     ("jobs,j", po::value(&out.workers)->default_value(std::thread::hardware_concurrency()), "Number of child process workers to use.")
-    ("gzip,z", po::bool_switch(&out.compress), "Compress output in gzip format");
+    ("gzip,z", po::bool_switch(&out.compress), "Compress output in gzip format")
+    ("bytes,b", po::value(&out.bytes)->default_value(1024 * 1024 * 1024), "Maximum filesize per output chunk.");
   po::variables_map vm;
   po::store(po::command_line_parser(restricted_argc, argv).options(desc).run(), vm);
   if (real_argc == 1 || vm["help"].as<bool>()) {
@@ -173,6 +264,12 @@ char **FindChild(int argc, char *argv[]) {
     } else if (!strcmp(a, "--jobs") || !strcmp(a, "-j")) {
       UTIL_THROW_IF2(i + 1 == argc, "Expected argument to jobs");
       i += 2;
+    } else if (!strcmp(a, "--bytes") || !strcmp(a, "-b")) {
+      UTIL_THROW_IF2(i + 1 == argc, "Expected argument to bytes");
+      i += 2;
+    } else if (!strcmp(a, "--output") || !strcmp(a, "-o")) {
+      UTIL_THROW_IF2(i + 1 == argc, "Expected argument to output");
+      i += 2;
     } else if (!strcmp(a, "--inputs") || !strcmp(a, "-i")) {
       used_inputs = true;
       // Consume everything that doesn't begin with -.
@@ -192,10 +289,8 @@ char **FindChild(int argc, char *argv[]) {
   exit(1);
 }
 
-void Run(const Options &options, char *child[]) {
-  util::FileStream out(1);
-
-  WorkerPool pool(options.workers, out, options.compress, child);
+template <class OutStream> void Run(OutStream &out, const Options &options, char *child[]) {
+  WorkerPool<OutStream> pool(options.workers, out, options.compress, child);
 
   util::FixedArray<std::thread> readers(options.inputs.empty() ? 1 : options.inputs.size());
   if (options.inputs.empty()) {
@@ -218,5 +313,12 @@ int main(int argc, char *argv[]) {
   char **child = preprocess::FindChild(argc, argv);
   preprocess::Options options;
   preprocess::ParseBoostArgs(child - argv, argc, argv, options);
-  Run(options, child);
+
+  if (!options.output.empty()) {
+    preprocess::SplitFileStream out(options.output, options.bytes);
+    Run(out, options, child);
+  } else {
+    util::FileStream out(1);
+    Run(out, options, child);
+  }
 }
