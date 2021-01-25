@@ -56,7 +56,7 @@ class HeaderReader {
     std::size_t consumed_;
 };
 
-bool WARCReader::Read(std::string &out) {
+bool WARCReader::Read(std::string &out, std::size_t size_limit) {
   std::swap(overhang_, out);
   overhang_.clear();
   out.reserve(32768);
@@ -85,6 +85,15 @@ bool WARCReader::Read(std::string &out) {
   if (total_length < out.size()) {
     overhang_.assign(out.data() + total_length, out.size() - total_length);
     out.resize(total_length);
+  } else if (total_length > size_limit) {
+    // Just read to a buffer and do nothing with it. If only I could read to the memory equivalent of /dev/null...
+    char buffer[8192];
+    for (std::size_t read = 0; read < total_length;) {
+      size_t got = reader_.Read(buffer, sizeof(buffer));
+      UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << length);
+      read += got;
+    }
+    out.clear(); // indicate we skipped the record
   } else {
     std::size_t start = out.size();
     out.resize(total_length);

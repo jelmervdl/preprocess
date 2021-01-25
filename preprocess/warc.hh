@@ -10,7 +10,7 @@ class WARCReader {
   public:
     explicit WARCReader(int fd) : reader_(fd) {}
 
-    bool Read(std::string &out);
+    bool Read(std::string &out, std::size_t size_limit = -1);
 
   private:
     util::ReadCompressed reader_;

@@ -143,8 +143,9 @@ template <class OutStream>  void OutputFromProcess(bool compress, int process_ou
 void ReadInput(int from, util::PCQueue<std::string> *queue) {
   preprocess::WARCReader reader(from);
   std::string str;
-  while (reader.Read(str)) {
-    queue->ProduceSwap(str);
+  while (reader.Read(str, 20 * 1024 * 1024)) { // 20M, same limit as warc2text
+    if (!str.empty()) // Skipped records show up as empty records
+      queue->ProduceSwap(str);
   }
 }
 
