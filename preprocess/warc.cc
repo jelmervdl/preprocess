@@ -8,6 +8,7 @@
 #include <limits>
 #include <string>
 #include <strings.h>
+#include <iostream>
 
 namespace preprocess {
 
@@ -56,56 +57,72 @@ class HeaderReader {
     std::size_t consumed_;
 };
 
-bool WARCReader::Read(std::string &out, std::size_t size_limit) {
-  std::swap(overhang_, out);
+bool WARCReader::Read(Record &out, std::size_t size_limit) {
+  std::swap(overhang_, out.str);
   overhang_.clear();
-  out.reserve(32768);
-  HeaderReader header(reader_, out);
+  out.skipped = 0;
+  out.str.reserve(32768);
+  HeaderReader header(reader_, out.str);
   util::StringPiece line;
-  if (!header.Line(line)) return false;
-  UTIL_THROW_IF(line != "WARC/1.0", util::Exception, "Expected WARC/1.0 header but got `" << line << '\'');
-  std::size_t length = 0;
-  bool seen_content_length = false;
-  const char kContentLength[] = "Content-Length:";
-  const std::size_t kContentLengthLength = sizeof(kContentLength) - 1;
-  while (!line.empty()) {
-    UTIL_THROW_IF(!header.Line(line), util::EndOfFileException, "WARC ended in header.");
-    if (line.size() >= kContentLengthLength && !strncasecmp(line.data(), kContentLength, kContentLengthLength)) {
-      UTIL_THROW_IF2(seen_content_length, "Two Content-Length headers?");
-      seen_content_length = true;
-      char *end;
-      length = std::strtoll(line.data() + kContentLengthLength, &end, 10);
-      // TODO: tolerate whitespace?
-      UTIL_THROW_IF2(end != line.data() + line.size(), "Content-Length parse error in `" << line << '\'');
+  try {
+    if (!header.Line(line)) return false;
+    UTIL_THROW_IF(line != "WARC/1.0", util::Exception, "Expected WARC/1.0 header but got `" << line << '\'');
+    std::size_t length = 0;
+    bool seen_content_length = false;
+    const char kContentLength[] = "Content-Length:";
+    const std::size_t kContentLengthLength = sizeof(kContentLength) - 1;
+    while (!line.empty()) {
+      UTIL_THROW_IF(!header.Line(line), util::EndOfFileException, "WARC ended in header.");
+      if (line.size() >= kContentLengthLength && !strncasecmp(line.data(), kContentLength, kContentLengthLength)) {
+        UTIL_THROW_IF2(seen_content_length, "Two Content-Length headers?");
+        seen_content_length = true;
+        char *end;
+        length = std::strtoll(line.data() + kContentLengthLength, &end, 10);
+        // TODO: tolerate whitespace?
+        UTIL_THROW_IF2(end != line.data() + line.size(), "Content-Length parse error in `" << line << '\'');
+      }
     }
-  }
-  UTIL_THROW_IF2(!seen_content_length, "No Content-Length: header in " << out);
-  std::size_t total_length = header.Consumed() + length + 4 /* CRLF CRLF after data as specified in the standard. */;
+    UTIL_THROW_IF2(!seen_content_length, "No Content-Length: header in " << out.str);
+    std::size_t total_length = header.Consumed() + length + 4 /* CRLF CRLF after data as specified in the standard. */;
 
-  if (total_length < out.size()) {
-    overhang_.assign(out.data() + total_length, out.size() - total_length);
-    out.resize(total_length);
-  } else if (total_length > size_limit) {
-    // Just read to a buffer and do nothing with it. If only I could read to the memory equivalent of /dev/null...
-    char buffer[8192];
-    for (std::size_t read = 0; read < total_length;) {
-      size_t got = reader_.Read(buffer, sizeof(buffer));
-      UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << length);
-      read += got;
+    if (total_length < out.str.size()) {
+      overhang_.assign(out.str.data() + total_length, out.str.size() - total_length);
+      out.str.resize(total_length);
+    } else if (total_length > size_limit) {
+      std::cerr << "[DEBUG] skipping record that is too long" << std::endl;
+      out.str.resize(32768); // at least 4 so we catch the ending \r\n\r\n
+      size_t got = 0;
+      while (out.skipped < total_length) {
+        got = reader_.Read(&out.str[0], std::min(out.str.size(), total_length - out.skipped));
+        UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << length);
+        out.skipped += got;
+      }
+      assert(out.skipped == total_length);
+      out.str.resize(got); // resize to last read so "Check CRLF CRLF" works.
+    } else {
+      std::size_t start = out.str.size();
+      out.str.resize(total_length);
+      while (start != out.str.size()) {
+        std::size_t got = reader_.Read(&out.str[start], out.str.size() - start);
+        UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << length);
+        start += got;
+      }
     }
-    out.clear(); // indicate we skipped the record
-  } else {
-    std::size_t start = out.size();
-    out.resize(total_length);
-    while (start != out.size()) {
-      std::size_t got = reader_.Read(&out[start], out.size() - start);
-      UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << length);
-      start += got;
-    }
+    // Check CRLF CRLF.
+    UTIL_THROW_IF2(util::StringPiece(out.str.data() + out.str.size() - 4, 4) != util::StringPiece("\r\n\r\n", 4), "End of WARC record missing CRLF CRLF");
+    return true;
+  } catch (util::CompressedException const &e) {
+    std::cerr << "[DEBUG] caught CompressedException " << e.what() << std::endl;
+    // We got a decompression error at this position in the reader. Let's make it
+    // jump forward to the next (possible) decodable chunk by searching for the
+    // next bit of magic. And return an empty record just to make clear we
+    // skipped a bit.
+
+    out.str.clear();
+    out.skipped = reader_.Skip();
+    std::cerr << "[DEBUG] skipped " << out.skipped << " bytes" << std::endl;
+    return true;
   }
-  // Check CRLF CRLF.
-  UTIL_THROW_IF2(util::StringPiece(out.data() + out.size() - 4, 4) != util::StringPiece("\r\n\r\n", 4), "End of WARC record missing CRLF CRLF");
-  return true;
 }
 
 } // namespace preprocess

@@ -123,18 +123,18 @@ void InputToProcess(util::PCQueue<std::string> *queue, int process_in) {
 // Thread to write from a worker to output.  Steals process_out.
 template <class OutStream>  void OutputFromProcess(bool compress, int process_out, OutStream *out, std::mutex *out_mutex) {
   WARCReader reader(process_out);
-  std::string str;
+  WARCReader::Record record;
   if (compress) {
     std::string compressed;
-    while (reader.Read(str)) {
-      util::GZCompress(str, compressed);
+    while (reader.Read(record)) {
+      util::GZCompress(record.str, compressed);
       std::lock_guard<std::mutex> guard(*out_mutex);
       out->write(compressed.data(), compressed.size());
     }
   } else {
-    while (reader.Read(str)) {
+    while (reader.Read(record)) {
       std::lock_guard<std::mutex> guard(*out_mutex);
-      out->write(str.data(), str.size());
+      out->write(record.str.data(), record.str.size());
     }
   }
 }
@@ -142,10 +142,12 @@ template <class OutStream>  void OutputFromProcess(bool compress, int process_ou
 // Thread to read WARC input from a file.  Steals from.  Does not poison the queue.
 void ReadInput(int from, util::PCQueue<std::string> *queue) {
   preprocess::WARCReader reader(from);
-  std::string str;
-  while (reader.Read(str, 20 * 1024 * 1024)) { // 20M, same limit as warc2text
-    if (!str.empty()) // Skipped records show up as empty records
-      queue->ProduceSwap(str);
+  preprocess::WARCReader::Record record;
+  while (reader.Read(record, 20 * 1024 * 1024)) { // 20M, same limit as warc2text
+    if (!record.skipped) // Skipped records show up as empty records
+      queue->ProduceSwap(record.str);
+    else
+      std::cerr << "Warning: Skipping " << record.skipped << " bytes" << std::endl;
   }
 }
 

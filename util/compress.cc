@@ -48,6 +48,11 @@ uint64_t &ReadBase::ReadCount(ReadCompressed &thunk) {
   return thunk.raw_amount_;
 }
 
+std::size_t ReadBase::Skip(ReadCompressed &thunk) {
+  UTIL_THROW(util::Exception, "ReadBase::Skip is not implemented");
+  return 0;
+}
+
 namespace {
 
 ReadBase *ReadFactory(int fd, uint64_t &raw_amount, const void *already_data, std::size_t already_size, bool require_compressed);
@@ -131,12 +136,51 @@ template <class Compression> class StreamCompressed : public ReadBase {
       return static_cast<const uint8_t*>(static_cast<void*>(back_.Stream().next_out)) - static_cast<const uint8_t*>(to);
     }
 
+    // Searches for next magic header
+    std::size_t Skip(ReadCompressed &thunk) {
+      std::size_t skipped = 0;
+      while (back_.Stream().avail_in) {
+        std::size_t offset = FindMagic(static_cast<const void*>(back_.Stream().next_in), back_.Stream().avail_in);
+        skipped += offset;
+
+        back_.SetInput(back_.Stream().next_in + offset, back_.Stream().avail_in - offset);
+
+        // if we scanned till the end
+        if (!back_.Stream().avail_in) {
+          // read ahead, but keep the last 5 bytes to catch magic spanning two reads. (8 for alignment?)
+          ReadInput(thunk, back_.Stream().next_in - 8, 8);
+          continue;
+        }
+        
+        ReplaceThis(ReadFactory(file_.release(), ReadCount(thunk), back_.Stream().next_in, back_.Stream().avail_in, true), thunk);
+        break;
+      }
+      return skipped;
+    }
+
   private:
-    void ReadInput(ReadCompressed &thunk) {
+    std::size_t FindMagic(const void * data, std::size_t size) {
+      const uint8_t kXZMagic[6] = { 0xFD, '7', 'z', 'X', 'Z', 0x00 };
+      const uint8_t *next = static_cast<const uint8_t*>(memmem(static_cast<const uint8_t*>(data), size, kXZMagic, sizeof(kXZMagic)));
+      if (next == nullptr)
+        return size;
+      else
+        return next - static_cast<const uint8_t*>(data);
+    }
+
+    void ReadInput(ReadCompressed &thunk, const void *already_data, std::size_t already_size) {
       assert(!back_.Stream().avail_in);
-      std::size_t got = ReadOrEOF(file_.get(), in_buffer_.get(), kInputBuffer);
-      back_.SetInput(in_buffer_.get(), got);
+      if (already_size != 0) {
+        assert(already_size < kInputBuffer);
+        std::memcpy(in_buffer_.get(), already_data, already_size);
+      }
+      std::size_t got = ReadOrEOF(file_.get(), static_cast<void*>(static_cast<char*>(in_buffer_.get()) + already_size), kInputBuffer - already_size);
+      back_.SetInput(in_buffer_.get(), already_size + got);
       ReadCount(thunk) += got;
+    }
+
+    void ReadInput(ReadCompressed &thunk) {
+      ReadInput(thunk, nullptr, 0);
     }
 
     scoped_fd file_;
@@ -466,6 +510,10 @@ void ReadCompressed::Reset(std::istream &in) {
 
 std::size_t ReadCompressed::Read(void *to, std::size_t amount) {
   return internal_->Read(to, amount, *this);
+}
+
+std::size_t ReadCompressed::Skip() {
+  return internal_->Skip(*this);
 }
 
 std::size_t ReadCompressed::ReadOrEOF(void *const to_in, std::size_t amount) {

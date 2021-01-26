@@ -42,6 +42,8 @@ class ReadBase {
 
     virtual std::size_t Read(void *to, std::size_t amount, ReadCompressed &thunk) = 0;
 
+    virtual std::size_t Skip(ReadCompressed &thunk);
+
   protected:
     static void ReplaceThis(ReadBase *with, ReadCompressed &thunk);
 
@@ -79,6 +81,8 @@ class ReadCompressed {
     std::size_t ReadOrEOF(void *const to, std::size_t amount);
 
     uint64_t RawAmount() const { return raw_amount_; }
+
+    std::size_t Skip();
 
   private:
     friend class ReadBase;
