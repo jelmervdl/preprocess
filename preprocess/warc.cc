@@ -57,6 +57,10 @@ class HeaderReader {
     std::size_t consumed_;
 };
 
+WARCReader::WARCReader(std::string const &filename)
+: WARCReader(util::OpenReadOrThrow(filename.c_str())) {
+}
+
 bool WARCReader::Read(Record &out, std::size_t size_limit) {
   std::swap(overhang_, out.str);
   overhang_.clear();

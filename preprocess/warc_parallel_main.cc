@@ -140,8 +140,7 @@ template <class OutStream>  void OutputFromProcess(bool compress, int process_ou
 }
 
 // Thread to read WARC input from a file.  Steals from.  Does not poison the queue.
-void ReadInput(int from, util::PCQueue<std::string> *queue) {
-  preprocess::WARCReader reader(from);
+void ReadInput(preprocess::WARCReader &&reader, util::PCQueue<std::string> *queue) {
   preprocess::WARCReader::Record record;
   while (reader.Read(record, 20 * 1024 * 1024)) { // 20M, same limit as warc2text
     if (!record.skipped) // Skipped records show up as empty records
@@ -233,7 +232,7 @@ void ParseBoostArgs(int restricted_argc, int real_argc, char *argv[], Options &o
     ("output,o", po::value(&out.output), "Output filename or prefix if --bytes is used.")
     ("jobs,j", po::value(&out.workers)->default_value(std::thread::hardware_concurrency()), "Number of child process workers to use.")
     ("gzip,z", po::bool_switch(&out.compress), "Compress output in gzip format")
-    ("bytes,b", po::value(&out.bytes)->default_value(1024 * 1024 * 1024), "Maximum filesize per output chunk.");
+    ("bytes,b", po::value(&out.bytes)->default_value(0), "Maximum filesize per output chunk.");
   po::variables_map vm;
   po::store(po::command_line_parser(restricted_argc, argv).options(desc).run(), vm);
   if (real_argc == 1 || vm["help"].as<bool>()) {
@@ -297,10 +296,10 @@ template <class OutStream> void Run(OutStream &out, const Options &options, char
 
   util::FixedArray<std::thread> readers(options.inputs.empty() ? 1 : options.inputs.size());
   if (options.inputs.empty()) {
-    readers.push_back(ReadInput, 0, &pool.InputQueue());
+    readers.push_back(ReadInput, preprocess::WARCReader(0), &pool.InputQueue());
   } else {
     for (const std::string &name : options.inputs) {
-      readers.push_back(ReadInput, util::OpenReadOrThrow(name.c_str()), &pool.InputQueue());
+      readers.push_back(ReadInput, preprocess::WARCReader(name.c_str()), &pool.InputQueue());
     }
   }
   for (std::thread &r : readers) {
@@ -317,8 +316,11 @@ int main(int argc, char *argv[]) {
   preprocess::Options options;
   preprocess::ParseBoostArgs(child - argv, argc, argv, options);
 
-  if (!options.output.empty()) {
+  if (!options.output.empty() && options.bytes) {
     preprocess::SplitFileStream out(options.output, options.bytes);
+    Run(out, options, child);
+  } else if (!options.output.empty()) {
+    util::FileStream out(util::CreateOrThrow(options.output.c_str()));
     Run(out, options, child);
   } else {
     util::FileStream out(1);
