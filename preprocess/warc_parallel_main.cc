@@ -140,13 +140,18 @@ template <class OutStream>  void OutputFromProcess(bool compress, int process_ou
 }
 
 // Thread to read WARC input from a file.  Steals from.  Does not poison the queue.
-void ReadInput(preprocess::WARCReader &&reader, util::PCQueue<std::string> *queue) {
+void ReadInput(preprocess::WARCReader &&reader, util::PCQueue<std::string> *queue, std::atomic<std::size_t> *errors) {
   preprocess::WARCReader::Record record;
-  while (reader.Read(record, 20 * 1024 * 1024)) { // 20M, same limit as warc2text
-    if (!record.skipped) // Skipped records show up as empty records
-      queue->ProduceSwap(record.str);
-    else
-      std::cerr << "Warning: Skipping " << record.skipped << " bytes" << std::endl;
+  try {
+    while (reader.Read(record, 20 * 1024 * 1024)) { // 20M, same limit as warc2text
+      if (!record.skipped) // Skipped records show up as empty records
+        queue->ProduceSwap(record.str);
+      else
+        std::cerr << "Warning: Skipping " << record.skipped << " bytes" << std::endl;
+    }
+  } catch (util::Exception const &e) {
+    std::cerr << "Error: Stopped reading: " << e.what() << std::endl;
+    ++(*errors);
   }
 }
 
@@ -291,21 +296,23 @@ char **FindChild(int argc, char *argv[]) {
   exit(1);
 }
 
-template <class OutStream> void Run(OutStream &out, const Options &options, char *child[]) {
+template <class OutStream> int Run(OutStream &out, const Options &options, char *child[]) {
   WorkerPool<OutStream> pool(options.workers, out, options.compress, child);
+  std::atomic<std::size_t> errors(0);
 
   util::FixedArray<std::thread> readers(options.inputs.empty() ? 1 : options.inputs.size());
   if (options.inputs.empty()) {
-    readers.push_back(ReadInput, preprocess::WARCReader(0), &pool.InputQueue());
+    readers.push_back(ReadInput, preprocess::WARCReader(0), &pool.InputQueue(), &errors);
   } else {
     for (const std::string &name : options.inputs) {
-      readers.push_back(ReadInput, preprocess::WARCReader(name.c_str()), &pool.InputQueue());
+      readers.push_back(ReadInput, preprocess::WARCReader(name.c_str()), &pool.InputQueue(), &errors);
     }
   }
   for (std::thread &r : readers) {
     r.join();
   }
   pool.Join();
+  return errors.load();
 }
 
 } // namespace
@@ -318,12 +325,12 @@ int main(int argc, char *argv[]) {
 
   if (!options.output.empty() && options.bytes) {
     preprocess::SplitFileStream out(options.output, options.bytes);
-    Run(out, options, child);
+    return Run(out, options, child);
   } else if (!options.output.empty()) {
     util::FileStream out(util::CreateOrThrow(options.output.c_str()));
-    Run(out, options, child);
+    return Run(out, options, child);
   } else {
     util::FileStream out(1);
-    Run(out, options, child);
+    return Run(out, options, child);
   }
 }
