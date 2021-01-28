@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <thread>
