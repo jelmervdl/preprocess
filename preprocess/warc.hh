@@ -3,6 +3,7 @@
 #include "util/compress.hh"
 
 #include <string>
+#include <vector>
 
 namespace preprocess {
 
@@ -23,6 +24,8 @@ class WARCReader {
     util::ReadCompressed reader_;
 
     std::string overhang_;
+
+    std::vector<std::size_t> offsets_;
 };
 
 } // namespace preprocess

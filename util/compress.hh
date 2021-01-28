@@ -4,6 +4,7 @@
 #include "util/exception.hh"
 #include "util/scoped.hh"
 
+#include <vector>
 #include <cstddef>
 #include <stdint.h>
 #include <string>
@@ -44,6 +45,8 @@ class ReadBase {
 
     virtual std::size_t Skip(ReadCompressed &thunk);
 
+    virtual std::size_t SkipTo(std::vector<std::size_t> const &offsets, ReadCompressed &thunk);
+
   protected:
     static void ReplaceThis(ReadBase *with, ReadCompressed &thunk);
 
@@ -83,6 +86,9 @@ class ReadCompressed {
     uint64_t RawAmount() const { return raw_amount_; }
 
     std::size_t Skip();
+    
+    std::size_t SkipTo(std::vector<std::size_t> const &offsets);
+
 
   private:
     friend class ReadBase;

@@ -53,6 +53,11 @@ std::size_t ReadBase::Skip(ReadCompressed &thunk) {
   return 0;
 }
 
+std::size_t ReadBase::SkipTo(std::vector<std::size_t> const &offsets, ReadCompressed &thunk) {
+  UTIL_THROW(util::Exception, "ReadBase::SkipTo is not implemented");
+  return 0;
+}
+
 namespace {
 
 ReadBase *ReadFactory(int fd, uint64_t &raw_amount, const void *already_data, std::size_t already_size, bool require_compressed);
@@ -156,6 +161,40 @@ template <class Compression> class StreamCompressed : public ReadBase {
         break;
       }
       return skipped;
+    }
+
+    std::size_t SkipTo(std::vector<std::size_t> const &offsets, ReadCompressed &thunk) {
+      uint64_t pos = ReadCount(thunk) - back_.Stream().avail_in;
+      uint64_t offset = 0;
+      for (auto it = offsets.begin(); it != offsets.end(); ++it) {
+        if (*it > pos) {
+          offset = *it;
+          break;
+        }
+      }
+
+      UTIL_THROW_IF(!offset, util::CompressedException, "No jump target beyond " << pos << " in offset list");
+
+      // Is the jump target already in our buffer, or is it further away?
+      if (offset < ReadCount(thunk)) {
+        back_.SetInput(back_.Stream().next_in + (offset - pos), back_.Stream().avail_in - (offset - pos));
+      } else {
+        back_.SetInput(nullptr, 0);
+
+        // Read into our buffer until we reach the target. We don't do anything with the buffer,
+        // i.e. we could also have used a ForwardSeek function here. Loop because we can only read
+        // one buffer at a time.
+        while (ReadCount(thunk) != offset) {
+          std::size_t got = ReadOrEOF(file_.get(), in_buffer_.get(), std::min(kInputBuffer, static_cast<std::size_t>(offset - ReadCount(thunk))));
+          if (!got)
+            break;
+          ReadCount(thunk) += got;
+        }
+      }
+
+      // Start reading a new from here.
+      ReplaceThis(ReadFactory(file_.release(), ReadCount(thunk), back_.Stream().next_in, back_.Stream().avail_in, true), thunk);
+      return (ReadCount(thunk) - back_.Stream().avail_in) - pos;
     }
 
   private:
@@ -351,8 +390,7 @@ class BZip {
 class XZip {
   public:
     XZip(const void *base, std::size_t amount)
-      : stream_(), action_(LZMA_RUN) {
-      memset(&stream_, 0, sizeof(stream_));
+      : stream_(LZMA_STREAM_INIT), action_(LZMA_RUN) {
       SetInput(base, amount);
       HandleError(lzma_stream_decoder(&stream_, UINT64_MAX, 0));
     }
@@ -514,6 +552,10 @@ std::size_t ReadCompressed::Read(void *to, std::size_t amount) {
 
 std::size_t ReadCompressed::Skip() {
   return internal_->Skip(*this);
+}
+
+std::size_t ReadCompressed::SkipTo(std::vector<std::size_t> const &offsets) {
+  return internal_->SkipTo(offsets, *this);
 }
 
 std::size_t ReadCompressed::ReadOrEOF(void *const to_in, std::size_t amount) {

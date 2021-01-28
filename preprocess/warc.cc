@@ -2,6 +2,7 @@
 
 #include "util/exception.hh"
 #include "util/file.hh"
+#include "util/file_piece.hh"
 #include "util/compress.hh"
 
 #include <cstdlib>
@@ -59,6 +60,17 @@ class HeaderReader {
 
 WARCReader::WARCReader(std::string const &filename)
 : WARCReader(util::OpenReadOrThrow(filename.c_str())) {
+  try {
+    // replace the .warc.whatever extension with .txt
+    std::size_t end = filename.rfind(".warc.");
+    std::string index_filename = filename.substr(0, end) + ".txt";
+    util::FilePiece index_fh(index_filename.c_str());
+    for (auto line : index_fh)
+      offsets_.push_back(std::atoll(line.data()));
+    std::cerr << "[Trace] Found index file " << index_filename << " with " << offsets_.size() << " offsets" << std::endl;
+  } catch (util::ErrnoException const &e) {
+    std::cerr << "[Trace] No offsets available for " << filename << ": " << e.what() << std::endl;
+  }
 }
 
 bool WARCReader::Read(Record &out, std::size_t size_limit) {
@@ -92,17 +104,16 @@ bool WARCReader::Read(Record &out, std::size_t size_limit) {
     if (total_length < out.str.size()) {
       overhang_.assign(out.str.data() + total_length, out.str.size() - total_length);
       out.str.resize(total_length);
-    } else if (total_length > size_limit) {
-      std::cerr << "[DEBUG] skipping record that is too long" << std::endl;
-      out.str.resize(32768); // at least 4 so we catch the ending \r\n\r\n
-      size_t got = 0;
-      while (out.skipped < total_length) {
-        got = reader_.Read(&out.str[0], std::min(out.str.size(), total_length - out.skipped));
-        UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << length);
-        out.skipped += got;
+    } else if (total_length > size_limit) { // Skip records that are too long
+      std::size_t start = out.str.size();
+      while (start != total_length) { // Skip by decompressing the body, but not storing it.
+        std::size_t got = reader_.Read(&out.str[0], out.str.size());
+        UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << out.str.size());
+        start += got;
       }
-      assert(out.skipped == total_length);
-      out.str.resize(got); // resize to last read so "Check CRLF CRLF" works.
+      out.skipped = start;
+      out.str.clear();
+      return true; // Don't bother checking the trailing \r\n\r\n
     } else {
       std::size_t start = out.str.size();
       out.str.resize(total_length);
@@ -116,16 +127,20 @@ bool WARCReader::Read(Record &out, std::size_t size_limit) {
     UTIL_THROW_IF2(util::StringPiece(out.str.data() + out.str.size() - 4, 4) != util::StringPiece("\r\n\r\n", 4), "End of WARC record missing CRLF CRLF");
     return true;
   } catch (util::CompressedException const &e) {
-    std::cerr << "[DEBUG] caught CompressedException " << e.what() << std::endl;
+    std::cerr << "[Warning] Caught CompressedException: " << e.what() << std::endl;
     // We got a decompression error at this position in the reader. Let's make it
     // jump forward to the next (possible) decodable chunk by searching for the
     // next bit of magic. And return an empty record just to make clear we
     // skipped a bit.
-
     out.str.clear();
-    out.skipped = reader_.Skip();
-    std::cerr << "[DEBUG] skipped " << out.skipped << " bytes" << std::endl;
-    return true;
+    try {
+      out.skipped = offsets_.empty() ? reader_.Skip() : reader_.SkipTo(offsets_);
+      std::cerr << "[Warning] skipped " << out.skipped << " bytes" << std::endl;
+      return true;
+    } catch (util::Exception const &e) {
+      std::cerr << "[Error] could not skip after error: " << e.what() << std::endl;
+      return false;
+    }
   }
 }
 
