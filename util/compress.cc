@@ -152,8 +152,8 @@ template <class Compression> class StreamCompressed : public ReadBase {
 
         // if we scanned till the end
         if (!back_.Stream().avail_in) {
-          // read ahead, but keep the last 5 bytes to catch magic spanning two reads. (8 for alignment?)
-          ReadInput(thunk, back_.Stream().next_in - 8, 8);
+          // read ahead, but keep the last N bytes to catch magic spanning two reads
+          ReadInput(thunk, back_.Stream().next_in - ReadCompressed::kMagicSize, ReadCompressed::kMagicSize);
           continue;
         }
         
