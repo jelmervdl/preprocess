@@ -39,6 +39,8 @@ foreach(exe ${EXE_LIST})
   set_target_properties(${exe} PROPERTIES FOLDER executables)
 endforeach(exe)
 
+target_link_libraries(warc ${PREPROCESS_LIBS})
+
 target_link_libraries(b64filter ${PREPROCESS_LIBS} base64 captive_child)
 target_link_libraries(cache ${PREPROCESS_LIBS} fields captive_child)
 target_link_libraries(docenc ${PREPROCESS_LIBS} base64)
