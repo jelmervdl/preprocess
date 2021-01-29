@@ -110,8 +110,9 @@ bool WARCReader::Read(Record &out, std::size_t size_limit) {
     } else if (total_length > size_limit) { // Skip records that are too long
       std::size_t start = out.str.size();
       while (start != total_length) { // Skip by decompressing the body, but not storing it.
-        std::size_t got = reader_.Read(&out.str[0], out.str.size());
-        UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << out.str.size());
+        std::size_t expect = std::min(out.str.size(), total_length - start);
+        std::size_t got = reader_.Read(&out.str[0], expect);
+        UTIL_THROW_IF(!got, util::EndOfFileException, "Unexpected end of file while reading content of length " << total_length);
         start += got;
       }
       out.skipped = start;
