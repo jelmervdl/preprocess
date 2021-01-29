@@ -24,6 +24,10 @@ class WARCReader {
       std::string str;
     } Record;
     
+    bool SkipRecord(Record &out);
+
+    bool SkipSection(Record &out);
+
     bool Read(Record &out, std::size_t size_limit = -1);
     
   private:
