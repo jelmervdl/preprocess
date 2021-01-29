@@ -227,6 +227,7 @@ struct Options {
   std::string output;
   std::size_t bytes;
   bool compress;
+  bool force;
 };
 
 void ParseBoostArgs(int restricted_argc, int real_argc, char *argv[], Options &out) {
@@ -238,6 +239,7 @@ void ParseBoostArgs(int restricted_argc, int real_argc, char *argv[], Options &o
     ("output,o", po::value(&out.output), "Output filename or prefix if --bytes is used.")
     ("jobs,j", po::value(&out.workers)->default_value(std::thread::hardware_concurrency()), "Number of child process workers to use.")
     ("gzip,z", po::bool_switch(&out.compress), "Compress output in gzip format")
+    ("force,f", po::bool_switch(&out.force), "Continue when encountering errors")
     ("bytes,b", po::value(&out.bytes)->default_value(0), "Maximum filesize per output chunk.");
   po::variables_map vm;
   po::store(po::command_line_parser(restricted_argc, argv).options(desc).run(), vm);
@@ -268,6 +270,8 @@ char **FindChild(int argc, char *argv[]) {
       // Help, doesn't matter, just make sure command is past that.
       return argv + i + 1;
     } else if (!strcmp(a, "--gzip") || !strcmp(a, "-z")) {
+      i += 1;
+    } else if (!strcmp(a, "--force") || !strcmp(a, "-f")) {
       i += 1;
     } else if (!strcmp(a, "--jobs") || !strcmp(a, "-j")) {
       UTIL_THROW_IF2(i + 1 == argc, "Expected argument to jobs");
@@ -313,7 +317,14 @@ template <class OutStream> int Run(OutStream &out, const Options &options, char 
     r.join();
   }
   pool.Join();
-  return errors.load();
+
+  if (errors.load()) {
+    std::cerr << "Finished with " << errors.load() << " errors." << std::endl;
+    return options.force ? 0 : 1;
+  } else {
+    std::cerr << "Finished without errors." << std::endl;
+    return 0;
+  }
 }
 
 } // namespace
