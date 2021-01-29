@@ -173,7 +173,7 @@ template <class Compression> class StreamCompressed : public ReadBase {
         }
       }
 
-      UTIL_THROW_IF(!offset, util::CompressedException, "No jump target beyond " << pos << " in offset list");
+      UTIL_THROW_IF(!offset, util::Exception, "No jump target beyond " << pos << " in offset list");
 
       // Is the jump target already in our buffer, or is it further away?
       if (offset < ReadCount(thunk)) {
