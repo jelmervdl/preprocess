@@ -148,10 +148,10 @@ void ReadInput(preprocess::WARCReader &&reader, util::PCQueue<std::string> *queu
       if (!record.skipped) // Skipped records show up as empty records
         queue->ProduceSwap(record.str);
       else
-        std::cerr << "Warning: Skipping " << record.skipped << " bytes" << std::endl;
+        std::cerr << "Skipping " << record.skipped << " bytes" << std::endl;
     }
   } catch (util::Exception const &e) {
-    std::cerr << "Error: Stopped reading: " << e.what() << std::endl;
+    std::cerr << "Stopped reading because: " << e.what() << std::endl;
     ++(*errors);
   }
 }

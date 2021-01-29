@@ -7,6 +7,12 @@
 
 namespace preprocess {
 
+class WARCReadException : public util::Exception {
+public:
+  WARCReadException() throw();
+  ~WARCReadException() throw();
+};
+
 class WARCReader {
   public:
     explicit WARCReader(int fd) : reader_(fd) {}

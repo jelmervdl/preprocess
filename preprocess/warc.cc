@@ -13,6 +13,9 @@
 
 namespace preprocess {
 
+WARCReadException::WARCReadException() throw() {}
+WARCReadException::~WARCReadException() throw() {}
+
 bool ReadMore(util::ReadCompressed &reader, std::string &out) {
   const std::size_t kRead = 4096;
   std::size_t had = out.size();
@@ -67,9 +70,9 @@ WARCReader::WARCReader(std::string const &filename)
     util::FilePiece index_fh(index_filename.c_str());
     for (auto line : index_fh)
       offsets_.push_back(std::atoll(line.data()));
-    std::cerr << "[Trace] Found index file " << index_filename << " with " << offsets_.size() << " offsets" << std::endl;
+    std::cerr << "Found index file " << index_filename << " with " << offsets_.size() << " offsets" << std::endl;
   } catch (util::ErrnoException const &e) {
-    std::cerr << "[Trace] No offsets available for " << filename << ": " << e.what() << std::endl;
+    std::cerr << "No offsets available for " << filename << ": " << e.what() << std::endl;
   }
 }
 
@@ -82,7 +85,7 @@ bool WARCReader::Read(Record &out, std::size_t size_limit) {
   util::StringPiece line;
   try {
     if (!header.Line(line)) return false;
-    UTIL_THROW_IF(line != "WARC/1.0", util::Exception, "Expected WARC/1.0 header but got `" << line << '\'');
+    UTIL_THROW_IF(line != "WARC/1.0", WARCReadException, reader_ << "Expected WARC/1.0 header but got `" << line << '\'');
     std::size_t length = 0;
     bool seen_content_length = false;
     const char kContentLength[] = "Content-Length:";
@@ -90,15 +93,15 @@ bool WARCReader::Read(Record &out, std::size_t size_limit) {
     while (!line.empty()) {
       UTIL_THROW_IF(!header.Line(line), util::EndOfFileException, "WARC ended in header.");
       if (line.size() >= kContentLengthLength && !strncasecmp(line.data(), kContentLength, kContentLengthLength)) {
-        UTIL_THROW_IF2(seen_content_length, "Two Content-Length headers?");
+        UTIL_THROW_IF(seen_content_length, WARCReadException, reader_ << "Two Content-Length headers?");
         seen_content_length = true;
         char *end;
         length = std::strtoll(line.data() + kContentLengthLength, &end, 10);
         // TODO: tolerate whitespace?
-        UTIL_THROW_IF2(end != line.data() + line.size(), "Content-Length parse error in `" << line << '\'');
+        UTIL_THROW_IF(end != line.data() + line.size(), WARCReadException, reader_ << "Content-Length parse error in `" << line << '\'');
       }
     }
-    UTIL_THROW_IF2(!seen_content_length, "No Content-Length: header in " << out.str);
+    UTIL_THROW_IF(!seen_content_length, WARCReadException, reader_ << "No Content-Length: header in " << out.str);
     std::size_t total_length = header.Consumed() + length + 4 /* CRLF CRLF after data as specified in the standard. */;
 
     if (total_length < out.str.size()) {
@@ -124,23 +127,22 @@ bool WARCReader::Read(Record &out, std::size_t size_limit) {
       }
     }
     // Check CRLF CRLF.
-    UTIL_THROW_IF2(util::StringPiece(out.str.data() + out.str.size() - 4, 4) != util::StringPiece("\r\n\r\n", 4), "End of WARC record missing CRLF CRLF");
+    UTIL_THROW_IF(util::StringPiece(out.str.data() + out.str.size() - 4, 4) != util::StringPiece("\r\n\r\n", 4), WARCReadException, reader_ << "End of WARC record missing CRLF CRLF");
     return true;
   } catch (util::CompressedException const &e) {
-    std::cerr << "[Warning] Caught CompressedException: " << e.what() << std::endl;
+    std::cerr << "Caught CompressedException while reading record: " << e.what() << std::endl;
     // We got a decompression error at this position in the reader. Let's make it
     // jump forward to the next (possible) decodable chunk by searching for the
     // next bit of magic. And return an empty record just to make clear we
     // skipped a bit.
     out.str.clear();
-    try {
-      out.skipped = offsets_.empty() ? reader_.Skip() : reader_.SkipTo(offsets_);
-      std::cerr << "[Warning] skipped " << out.skipped << " bytes" << std::endl;
-      return true;
-    } catch (util::Exception const &e) {
-      std::cerr << "[Error] could not skip after error: " << e.what() << std::endl;
-      return false;
-    }
+    out.skipped = offsets_.empty() ? reader_.Skip() : reader_.SkipTo(offsets_);
+    return true;
+  } catch (WARCReadException const &e) {
+    std::cerr << "Caught WARCReadException while reading record: " << e.what() << std::endl;
+    out.str.clear();
+    out.skipped = offsets_.empty() ? reader_.Skip() : reader_.SkipTo(offsets_);
+    return true;
   }
 }
 

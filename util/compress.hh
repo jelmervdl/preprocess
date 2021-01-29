@@ -3,6 +3,7 @@
 
 #include "util/exception.hh"
 #include "util/scoped.hh"
+#include "util/string_stream.hh"
 
 #include <vector>
 #include <cstddef>
@@ -89,6 +90,9 @@ class ReadCompressed {
     
     std::size_t SkipTo(std::vector<std::size_t> const &offsets);
 
+    friend util::StringStream &operator<<(util::StringStream &out, ReadCompressed const &reader) {
+      return out << "<ReadCompressed at offset " << reader.RawAmount() << ">";
+    }
 
   private:
     friend class ReadBase;
