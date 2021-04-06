@@ -18,6 +18,7 @@ namespace {
 struct Options {
 	std::vector<std::string> keys;
 	char delimiter;
+	std::string filelist;
 	std::vector<std::string> files;
 };
 
@@ -278,6 +279,7 @@ void ParseOptions(Options &opt, int argc, char** argv) {
 	visible.add_options()
 		("key,k", po::value(&opt.keys)->default_value(boost::assign::list_of(std::string("1,")), "1,")->composing(), "Column(s) key to use as the deduplication string. Can be multiple ranges separated by commas. Each range can have n(umeric) or r(reverse) as flag.")
 		("field-separator,t", po::value(&opt.delimiter)->default_value('\t'), "Field separator")
+		("files-from,f", po::value(&opt.filelist), "Read file names from separate file (or '-' for stdin)")
 		("help,h", "Produce help message");
 
 	po::options_description hidden("Hidden options");
@@ -295,10 +297,16 @@ void ParseOptions(Options &opt, int argc, char** argv) {
 	po::notify(vm);
 
 	if (vm.count("help")) {
-		std::cerr << "Usage: [-k key] [-t delim] [-h] [file ...]" << "\n"
+		std::cerr << "Usage: [-k key] [-t delim] [-h] [-f filelist] [file ...]" << "\n"
 		          << "\n" << visible << "\n";
 		std::exit(1);
 	}
+}
+
+void ReadFileList(util::FilePiece &filelist, std::vector<std::string> &filenames) {
+	for (util::StringPiece const &filename : filelist)\
+		if (!filename.empty())
+			filenames.push_back(std::string(filename.data(), filename.size()));
 }
 
 } // namespace
@@ -311,6 +319,15 @@ int main(int argc, char** argv) {
 	std::vector<FieldRange> ranges;
 	for (std::string const &key : options.keys)
 		ranges.push_back(ParseRange(key.c_str()));
+
+	// Read file list (if provided)
+	if (options.filelist == "-") {
+		auto list = util::FilePiece(STDIN_FILENO);
+		ReadFileList(list, options.files);
+	} else if (!options.filelist.empty()) {
+		auto list = util::FilePiece(options.filelist.c_str());
+		ReadFileList(list, options.files);
+	}
 
 	util::FileStream out(STDOUT_FILENO);
 
