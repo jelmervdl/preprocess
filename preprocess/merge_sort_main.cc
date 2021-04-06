@@ -260,8 +260,6 @@ int Compare(std::vector<Field> const &left, std::vector<Field> const &right) {
 	assert(left.size() == right.size());
 
 	for (std::size_t i = 0; order == 0 && i < left.size(); ++i) {
-		std::cerr << "Compare  of '" << left[i].str << "' and '" << right[i].str << "': ";
-	
 		if ((left[i].flags & RangeFlags::numeric) == RangeFlags::numeric)
 			order = CompareNumeric(left[i].str, right[i].str);
 		else
