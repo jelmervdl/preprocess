@@ -20,6 +20,7 @@ struct Options {
 	char delimiter;
 	std::string filelist;
 	std::vector<std::string> files;
+	std::string output;
 };
 
 enum class RangeFlags {
@@ -279,6 +280,7 @@ void ParseOptions(Options &opt, int argc, char** argv) {
 	visible.add_options()
 		("key,k", po::value(&opt.keys)->default_value(boost::assign::list_of(std::string("1,")), "1,")->composing(), "Column(s) key to use as the deduplication string. Can be multiple ranges separated by commas. Each range can have n(umeric) or r(reverse) as flag.")
 		("field-separator,t", po::value(&opt.delimiter)->default_value('\t'), "Field separator")
+		("output,o", po::value(&opt.output)->default_value("-"), "Output file")
 		("files-from,f", po::value(&opt.filelist), "Read file names from separate file (or '-' for stdin)")
 		("help,h", "Produce help message");
 
@@ -309,6 +311,27 @@ void ReadFileList(util::FilePiece &filelist, std::vector<std::string> &filenames
 			filenames.push_back(std::string(filename.data(), filename.size()));
 }
 
+void Process(util::FixedArray<FileReader> &files, util::FileStream &out) {
+	while (true) {
+		FileReader *best = nullptr;
+
+		for (FileReader &file : files) {
+			if (file.eof)
+				continue;
+
+			if (!best || Compare(best->fields, file.fields) > 0)
+				best = &file;
+		}
+
+		// No best? All files must be eof
+		if (!best)
+			break;
+
+		out << best->line << '\n';
+		best->Consume();
+	}
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -329,31 +352,19 @@ int main(int argc, char** argv) {
 		ReadFileList(list, options.files);
 	}
 
-	util::FileStream out(STDOUT_FILENO);
-
 	LineParser parser(ranges, options.delimiter);
 	
 	util::FixedArray<FileReader> files(options.files.size());
 	for (std::string const &filename : options.files)
 		files.emplace_back(parser, filename);
 	
-	while (true) {
-		FileReader *best = nullptr;
-
-		for (FileReader &file : files) {
-			if (file.eof)
-				continue;
-
-			if (!best || Compare(best->fields, file.fields) > 0)
-				best = &file;
-		}
-
-		// No best? All files must be eof
-		if (!best)
-			break;
-
-		out << best->line << '\n';
-		best->Consume();
+	if (options.output == "-") {
+		util::FileStream out(STDOUT_FILENO);
+		Process(files, out);
+	} else {
+		util::scoped_fd fout(util::CreateOrThrow(options.output.c_str()));
+		util::FileStream out(fout.get());
+		Process(files, out);
 	}
 
 	return 0;
