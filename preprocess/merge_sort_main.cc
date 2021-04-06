@@ -267,8 +267,6 @@ int Compare(std::vector<Field> const &left, std::vector<Field> const &right) {
 
 		if ((left[i].flags & RangeFlags::reverse) == RangeFlags::reverse)
 			order *= -1;
-
-		std::cerr << order << std::endl;
 	}
 
 	return order;
