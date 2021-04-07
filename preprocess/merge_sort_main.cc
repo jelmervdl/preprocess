@@ -85,8 +85,10 @@ struct FieldRange {
 	std::size_t begin;
 	std::size_t end; // read: [begin, end)
 	RangeFlags flags = RangeFlags::none;
-	static const std::size_t kInfiniteEnd = std::numeric_limits<std::size_t>::max();
+	static const std::size_t kInfiniteEnd;
 };
+
+const std::size_t FieldRange::kInfiniteEnd = std::numeric_limits<std::size_t>::max();
 
 bool ConsumeInt(const char *&arg, std::size_t &ret) {
 	char *end;
