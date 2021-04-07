@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <functional>
 #include <limits>
 #include <string>
 #include <vector>
 #include <unistd.h>
 #include <stdlib.h>
+#include <memory>
 #include "util/file_stream.hh"
 #include "util/file_piece.hh"
 #include "util/fixed_array.hh"
@@ -14,6 +16,39 @@
 
 
 namespace {
+
+template <typename Type, typename Compare = std::less<Type>>
+class PriorityQueue {
+public:
+	explicit PriorityQueue(const Compare &compare = Compare())
+	: compare_(compare) {
+
+	}
+
+	void push(Type &&element) {
+		elements_.push_back(std::move(element));
+		std::push_heap(elements_.begin(), elements_.end(), compare_);
+	}
+
+	Type pop() {
+		std::pop_heap(elements_.begin(), elements_.end(), compare_);
+		Type top = std::move(elements_.back());
+		elements_.pop_back();
+		return top;
+	}
+
+	bool empty() const {
+		return elements_.empty();
+	}
+
+	void reserve(std::size_t capacity) {
+		elements_.reserve(capacity);
+	}
+
+private:
+	std::vector<Type> elements_;
+	Compare compare_;
+};
 
 struct Options {
 	std::vector<std::string> keys;
@@ -164,42 +199,6 @@ struct LineParser {
 	}
 };
 
-struct FileReader {
-	std::string filename;
-	LineParser const &parser;
-	util::FilePiece backing;
-	util::StringPiece line;
-	std::vector<Field> fields;
-	std::size_t n;
-	bool eof;
-
-	FileReader(LineParser const &parser, std::string const &filename)
-	: filename(filename),
-	  parser(parser),
-		backing(filename.c_str()),
-		n(0),
-	  eof(false) {
-		Consume();
-	}
-
-	void Consume() {
-		while (!eof) {
-			eof = !backing.ReadLineOrEOF(line);
-			
-			if (eof)
-				break;
-			
-			++n;
-			try {
-				parser.Parse(line, fields);
-				break;
-			} catch (OutOfRange const &e) {
-				UTIL_THROW(util::Exception, "Parse error on line " << n << " of file " << filename << ":" << e.what());
-			}
-		}
-	}
-};
-
 // Compare numeric without trying to parse the number
 int CompareNumeric(util::StringPiece const &left, util::StringPiece const &right) {
 	auto li = left.begin(), ri = right.begin();
@@ -274,6 +273,45 @@ int Compare(std::vector<Field> const &left, std::vector<Field> const &right) {
 	return order;
 }
 
+struct FileReader {
+	std::string filename;
+	LineParser const &parser;
+	util::FilePiece backing;
+	util::StringPiece line;
+	std::vector<Field> fields;
+	std::size_t n;
+	bool eof;
+
+	FileReader(LineParser const &parser, std::string const &filename)
+	: filename(filename),
+	  parser(parser),
+		backing(filename.c_str()),
+		n(0),
+	  eof(false) {
+		Consume();
+	}
+
+	bool Consume() {
+		while (!eof) {
+			eof = !backing.ReadLineOrEOF(line);
+			
+			if (eof)
+				break;
+			
+			++n;
+			try {
+				parser.Parse(line, fields);
+				return true;
+			} catch (OutOfRange const &e) {
+				UTIL_THROW(util::Exception, "Parse error on line " << n << " of file " << filename << ":" << e.what());
+			}
+		}
+		return false;
+	}
+};
+
+typedef typename std::unique_ptr<FileReader> FileReaderPtr;
+
 void ParseOptions(Options &opt, int argc, char** argv) {
 	namespace po = boost::program_options;
 	po::options_description visible("Options");
@@ -311,26 +349,25 @@ void ReadFileList(util::FilePiece &filelist, std::vector<std::string> &filenames
 			filenames.push_back(std::string(filename.data(), filename.size()));
 }
 
-void Process(util::FixedArray<FileReader> &files, util::FileStream &out) {
-	while (true) {
-		FileReader *best = nullptr;
-
-		for (FileReader &file : files) {
-			if (file.eof)
-				continue;
-
-			if (!best || Compare(best->fields, file.fields) > 0)
-				best = &file;
-		}
-
-		// No best? All files must be eof
-		if (!best)
-			break;
-
-		out << best->line << '\n';
-		best->Consume();
+template <typename T>
+void Process(PriorityQueue<FileReaderPtr,T> &files, util::FileStream &out) {
+	while (!files.empty()) {
+		FileReaderPtr top(files.pop());
+		out << top->line << '\n';
+		if (top->Consume())
+			files.push(std::move(top));
 	}
 }
+
+} // namespace
+
+namespace std {
+
+template <> struct greater<FileReaderPtr> {
+	bool operator()(FileReaderPtr const &left, FileReaderPtr const &right) const {
+		return Compare(left->fields, right->fields);
+	}
+};
 
 } // namespace
 
@@ -354,9 +391,10 @@ int main(int argc, char** argv) {
 
 	LineParser parser(ranges, options.delimiter);
 	
-	util::FixedArray<FileReader> files(options.files.size());
+	PriorityQueue<FileReaderPtr, std::greater<FileReaderPtr>> files;
+	files.reserve(options.files.size());
 	for (std::string const &filename : options.files)
-		files.emplace_back(parser, filename);
+		files.push(FileReaderPtr(new FileReader(parser, filename)));
 	
 	if (options.output == "-") {
 		util::FileStream out(STDOUT_FILENO);
