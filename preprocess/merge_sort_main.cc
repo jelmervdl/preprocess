@@ -312,10 +312,10 @@ struct FileReader {
 		backing(filename.c_str()),
 		n(0),
 	  eof(false) {
-		Consume();
+	  	//
 	}
 
-	bool Consume() {
+	bool Next() {
 		while (!eof) {
 			util::StringPiece line;
 			eof = !backing.ReadLineOrEOF(line);
@@ -420,13 +420,18 @@ struct Worker {
 		PriorityQueue<FileReaderPtr, std::greater<FileReaderPtr>> files;
 		files.reserve(filenames.size());
 
-		for (auto &&filename : filenames)
-			files.push(FileReaderPtr(new FileReader(parser, filename)));
+		for (auto &&filename : filenames) {
+			FileReaderPtr reader(new FileReader(parser, filename));
+
+			// Read the first line. If the file ends up empty, don't add it.
+			if (reader->Next())
+				files.push(std::move(reader));
+		}
 		
 		while (!files.empty()) {
 			FileReaderPtr top(files.pop());
 			queue.ProduceSwap(top->record);
-			if (top->Consume())
+			if (top->Next())
 				files.push(std::move(top));
 		}
 
