@@ -365,7 +365,7 @@ namespace std {
 
 template <> struct greater<FileReaderPtr> {
 	bool operator()(FileReaderPtr const &left, FileReaderPtr const &right) const {
-		return Compare(left->fields, right->fields);
+		return Compare(left->fields, right->fields) > 0;
 	}
 };
 
