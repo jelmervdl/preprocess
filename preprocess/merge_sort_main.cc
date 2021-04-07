@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <memory>
+#include <thread>
+#include "util/pcqueue.hh"
 #include "util/file_stream.hh"
 #include "util/file_piece.hh"
 #include "util/fixed_array.hh"
@@ -56,6 +58,7 @@ struct Options {
 	std::string filelist;
 	std::vector<std::string> files;
 	std::string output;
+	std::size_t thread_count;
 };
 
 enum class RangeFlags {
@@ -159,7 +162,8 @@ struct LineParser {
 
 	}
 
-	void Parse(util::StringPiece const &str, std::vector<Field> &fields) const {
+	template <typename StrType>
+	void Parse(StrType const &str, std::vector<Field> &fields) const {
 		fields.clear();
 		
 		// Keep offsets in case a next range refers to a previous column
@@ -273,12 +277,32 @@ int Compare(std::vector<Field> const &left, std::vector<Field> const &right) {
 	return order;
 }
 
+struct Record {
+	std::string str;
+	std::vector<Field> fields;
+};
+
+typedef typename std::unique_ptr<Record> RecordPtr;
+
+} // namespace
+
+namespace std {
+
+template <> struct greater<RecordPtr> {
+	bool operator()(RecordPtr const &left, RecordPtr const &right) const {
+		return Compare(left->fields, right->fields) > 0;
+	}
+};
+
+} // namespace
+
+namespace {
+
 struct FileReader {
 	std::string filename;
 	LineParser const &parser;
 	util::FilePiece backing;
-	util::StringPiece line;
-	std::vector<Field> fields;
+	RecordPtr record;
 	std::size_t n;
 	bool eof;
 
@@ -293,14 +317,18 @@ struct FileReader {
 
 	bool Consume() {
 		while (!eof) {
+			util::StringPiece line;
 			eof = !backing.ReadLineOrEOF(line);
 			
 			if (eof)
 				break;
+
+			record.reset(new Record());
+			record->str = std::string(line.data(), line.size());
 			
 			++n;
 			try {
-				parser.Parse(line, fields);
+				parser.Parse(record->str, record->fields);
 				return true;
 			} catch (OutOfRange const &e) {
 				UTIL_THROW(util::Exception, "Parse error on line " << n << " of file " << filename << ":" << e.what());
@@ -312,6 +340,20 @@ struct FileReader {
 
 typedef typename std::unique_ptr<FileReader> FileReaderPtr;
 
+} // namespace
+
+namespace std {
+
+template <> struct greater<FileReaderPtr> {
+	bool operator()(FileReaderPtr const &left, FileReaderPtr const &right) const {
+		return std::greater<RecordPtr>()(left->record, right->record);
+	}
+};
+
+} // namespace
+
+namespace {
+
 void ParseOptions(Options &opt, int argc, char** argv) {
 	namespace po = boost::program_options;
 	po::options_description visible("Options");
@@ -319,6 +361,7 @@ void ParseOptions(Options &opt, int argc, char** argv) {
 		("key,k", po::value(&opt.keys)->default_value(boost::assign::list_of(std::string("1,")), "1,")->composing(), "Column(s) key to use as the deduplication string. Can be multiple ranges separated by commas. Each range can have n(umeric) or r(reverse) as flag.")
 		("field-separator,t", po::value(&opt.delimiter)->default_value('\t'), "Field separator")
 		("output,o", po::value(&opt.output)->default_value("-"), "Output file")
+		("threads,j", po::value(&opt.thread_count)->default_value(4), "Thread count")
 		("files-from,f", po::value(&opt.filelist), "Read file names from separate file (or '-' for stdin)")
 		("help,h", "Produce help message");
 
@@ -349,25 +392,85 @@ void ReadFileList(util::FilePiece &filelist, std::vector<std::string> &filenames
 			filenames.push_back(std::string(filename.data(), filename.size()));
 }
 
-template <typename T>
-void Process(PriorityQueue<FileReaderPtr,T> &files, util::FileStream &out) {
-	while (!files.empty()) {
-		FileReaderPtr top(files.pop());
-		out << top->line << '\n';
-		if (top->Consume())
-			files.push(std::move(top));
-	}
+std::size_t CeilDiv(std::size_t x, std::size_t y) {
+	return (x + y - 1) / y;
 }
 
-} // namespace
+struct Worker {
+	// Accessed by thread
+	LineParser const &parser;
+	util::PCQueue<RecordPtr> queue;
+	std::vector<std::string> filenames;
 
-namespace std {
+	// Accessed from main thread
+	RecordPtr record;
+	bool eof;
+	std::thread thread;
 
-template <> struct greater<FileReaderPtr> {
-	bool operator()(FileReaderPtr const &left, FileReaderPtr const &right) const {
-		return Compare(left->fields, right->fields) > 0;
+	Worker(LineParser const &parser, std::vector<std::string> &&filenames)
+	: parser(parser),
+	  queue(1024), // Buffer size?
+	  filenames(std::move(filenames)),
+	  eof(false),
+	  thread([this]() { (*this)(); }) {
+
+	}
+
+	void operator()() {
+		PriorityQueue<FileReaderPtr, std::greater<FileReaderPtr>> files;
+		files.reserve(filenames.size());
+
+		for (auto &&filename : filenames)
+			files.push(FileReaderPtr(new FileReader(parser, filename)));
+		
+		while (!files.empty()) {
+			FileReaderPtr top(files.pop());
+			queue.ProduceSwap(top->record);
+			if (top->Consume())
+				files.push(std::move(top));
+		}
+
+ 		// Notify of eof
+		RecordPtr poison;
+		queue.ProduceSwap(poison);
+	}
+
+	void Next() {
+		if (!queue.ConsumeSwap(record))
+			eof = true;
 	}
 };
+
+typedef typename std::unique_ptr<Worker> WorkerPtr;
+
+void Process(std::vector<WorkerPtr> &&workers, util::FileStream &out) {
+	// First consume to get that first record here on the main thread
+	for (WorkerPtr const &worker : workers)
+		worker->Next();
+
+	while (true) {
+		Worker *best = nullptr;
+
+		for (WorkerPtr const &worker : workers) {
+			if (worker->eof)
+				continue;
+
+			if (!best || std::greater<RecordPtr>()(best->record, worker->record))
+				best = worker.get(); // unsafe ptr, but never leaves this while loop
+		}
+
+		if (!best) // all workers eof
+			break;
+
+		out << best->record->str << '\n';
+		best->Next();
+	}
+
+	// Just nicely finish up (they have all ended already because they eof'ed but
+	// I want to be very sure I don't free up resources that may still be in use.)
+	for (WorkerPtr const &worker : workers)
+		worker->thread.join();
+}
 
 } // namespace
 
@@ -390,19 +493,28 @@ int main(int argc, char** argv) {
 	}
 
 	LineParser parser(ranges, options.delimiter);
-	
-	PriorityQueue<FileReaderPtr, std::greater<FileReaderPtr>> files;
-	files.reserve(options.files.size());
-	for (std::string const &filename : options.files)
-		files.push(FileReaderPtr(new FileReader(parser, filename)));
+
+	std::vector<WorkerPtr> workers;
+	workers.reserve(options.thread_count);
+
+	// Divide files among the workers and start the workers
+	for (std::size_t i = 0; i < options.thread_count; ++i) {
+		std::vector<std::string> filenames;
+		filenames.reserve(CeilDiv(options.files.size(), options.thread_count));
+
+		for (std::size_t n = i; n < options.files.size(); n += options.thread_count)
+			filenames.push_back(options.files[n]);
+
+		workers.emplace_back(new Worker(parser, std::move(filenames)));
+	}
 	
 	if (options.output == "-") {
 		util::FileStream out(STDOUT_FILENO);
-		Process(files, out);
+		Process(std::move(workers), out);
 	} else {
 		util::scoped_fd fout(util::CreateOrThrow(options.output.c_str()));
 		util::FileStream out(fout.get());
-		Process(files, out);
+		Process(std::move(workers), out);
 	}
 
 	return 0;
