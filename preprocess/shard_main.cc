@@ -18,6 +18,7 @@ struct Options {
   char delim;
   std::vector<std::string> outputs;
   util::WriteCompressed::Compression compression;
+  std::size_t buffer_size;
 };
 
 void ParseArgs(int argc, char *argv[], Options &out) {
@@ -35,7 +36,8 @@ void ParseArgs(int argc, char *argv[], Options &out) {
     ("prefix,p", po::value(&prefix), "Prefix and count of outputs")
     ("number,n", po::value(&number), "Number of shards")
     ("output,o", po::value(&out.outputs)->multitoken(), "Output file names (or just list them without -o)")
-    ("compress,c", po::value(&compression_string)->default_value("none"), "Compression.  One of none, gzip, or bzip2");
+    ("compress,c", po::value(&compression_string)->default_value("none"), "Compression.  One of none, gzip, or bzip2")
+    ("buffer,b", po::value(&out.buffer_size)->default_value(4096), "Compression buffer size in bytes");
 
   po::positional_options_description pd;
   pd.add("output", -1);
@@ -100,7 +102,7 @@ int main(int argc, char *argv[]) {
   util::FixedArray<util::ThreadedBufferedStream<util::WriteCompressed> > out(options.outputs.size());
   std::string output(argv[1]);
   for (const std::string &o : options.outputs) {
-    out.push_back(util::CreateOrThrow(o.c_str()), options.compression);
+    out.push_back(util::CreateOrThrow(o.c_str()), options.compression, 9, options.buffer_size);
   }
   while (in.ReadLineOrEOF(line)) {
     preprocess::HashCallback cb;

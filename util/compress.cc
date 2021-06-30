@@ -661,21 +661,21 @@ class WriteUncompressed : public WriteBase {
     FileWriter writer_;
 };
 
-WriteCompressed::WriteCompressed(int fd, WriteCompressed::Compression compression) {
+WriteCompressed::WriteCompressed(int fd, WriteCompressed::Compression compression, int level, std::size_t compressed_buffer) {
   switch (compression) {
     case NONE:
       backend_.reset(new WriteUncompressed(fd));
       return;
     case GZIP:
 #ifdef HAVE_ZLIB
-      backend_.reset(new WriteStream<GZipWrite>(fd));
+      backend_.reset(new WriteStream<GZipWrite>(fd, level, compressed_buffer));
 #else
       UTIL_THROW(CompressedException, "gzip support not compiled in");
 #endif
       return;
     case BZIP:
 #ifdef HAVE_BZLIB
-      backend_.reset(new WriteStream<BZipWrite>(fd));
+      backend_.reset(new WriteStream<BZipWrite>(fd, level, compressed_buffer));
 #else
       UTIL_THROW(CompressedException, "bzip support not compiled in");
 #endif

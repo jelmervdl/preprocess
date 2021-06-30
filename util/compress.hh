@@ -106,7 +106,7 @@ class WriteCompressed {
   public:
     enum Compression { NONE, GZIP, BZIP, XZIP };
     // Takes ownership of fd.
-    explicit WriteCompressed(int fd, Compression compression);
+    explicit WriteCompressed(int fd, Compression compression, int level = 9, std::size_t compressed_buffer = 4096);
 
     ~WriteCompressed();
 
