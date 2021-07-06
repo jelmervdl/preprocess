@@ -6,89 +6,75 @@
 #include <future>
 #include <vector>
 #include <unistd.h>
+#include <memory>
 
-struct Future {
-	bool valid;
-	std::future<std::string> future;
+typedef std::promise<std::string> Promise;
 
-	Future()
-	: valid(false)
-	, future() {
-		//
-	}
-
-	Future(std::future<std::string> &&future)
-	: valid(true)
-	, future(std::move(future)) {
-		//
-	}
-};
-
-
-struct Promise {
-	bool valid;
-	std::promise<std::string> promise;
-
-	Promise()
-	: valid(false)
-	, promise() {
-		//
-	}
-
-	Promise(std::promise<std::string> &&promise)
-	: valid(true)
-	, promise(std::move(promise)) {
-		//
-	}
-};
+typedef std::unique_ptr<Promise> PromisePtr;
 
 
 struct Task {
 	std::string input;
-	std::promise<std::string> output;
+	Promise *output;
 };
 
 
-void ReadInput(int from, util::PCQueue<Task> *tasks, util::UnboundedSingleQueue<Future> *futures) {
+void ReadInput(int from, util::PCQueue<Task> *tasks, util::UnboundedSingleQueue<PromisePtr> *promises) {
 	util::FilePiece in(from);
 
 	for (util::StringPiece line : in) {
-		Promise promise;
-		futures->Produce(std::move(promise.promise.get_future()));
-		Task task{line.as_string(), std::move(promise.promise)};
+		PromisePtr promise(new Promise());
+
+		Task task{
+			line.as_string(),
+			promise.get()	
+		};
 		tasks->ProduceSwap(task);
+
+		promises->Produce(std::move(promise));
 	}
 }
 
 
-void WriteOutput(int to, util::UnboundedSingleQueue<Future> *futures) {
+void WriteOutput(int to, util::UnboundedSingleQueue<PromisePtr> *promises) {
 	util::FileStream out(to);
-	Future future;
+	PromisePtr promise;
 
-	while (futures->Consume(future).valid)
-		out << future.future.get() << '\n';
+	while (promises->Consume(promise)) {
+		try {
+			out << promise->get_future().get() << '\n';
+		} catch (std::exception const &e) {
+			std::cerr << "Exception in worker: " << e.what() << std::endl;
+			std::abort();
+		}
+	}
 }
 
 
-void InputToProcess(util::PCQueue<Task> *tasks, util::scoped_fd process_in, util::UnboundedSingleQueue<Promise> *promises) {
+void InputToProcess(util::PCQueue<Task> *tasks, util::scoped_fd process_in, util::UnboundedSingleQueue<Promise*> *promises) {
 	util::FileStream in(process_in.release());
 	Task task;
 
-	while (!tasks->ConsumeSwap(task).input.empty()) {
+	while (tasks->ConsumeSwap(task).output) { // empty output pointer marks end
 		in << task.input << '\n';
-		promises->Produce(std::move(task.output));
+		promises->Produce(task.output);
 	}
 
-	promises->Produce(Promise()); // Tells OutputFromProcess to stop
+	promises->Produce(nullptr); // Tells OutputFromProcess to stop
 }
 
 
-void OutputFromProcess(util::scoped_fd process_fd, util::UnboundedSingleQueue<Promise> *promises) {
+void OutputFromProcess(util::scoped_fd process_fd, util::UnboundedSingleQueue<Promise*> *promises) {
 	util::FilePiece process_out(process_fd.release());
 
-	Promise promise;
-	while (promises->Consume(promise).valid)
-		promise.promise.set_value(process_out.ReadLine().as_string());
+	Promise *promise;
+	while (promises->Consume(promise)) {
+		try {
+			promise->set_value(process_out.ReadLine().as_string());
+		} catch (...) {
+			promise->set_exception(std::current_exception());
+		}
+	}
 }
 
 
@@ -111,7 +97,7 @@ class Worker {
 	private:
 		pid_t child_;
 		std::thread input_, output_;
-		util::UnboundedSingleQueue<Promise> promises_;
+		util::UnboundedSingleQueue<Promise*> promises_;
 };
 
 
@@ -158,23 +144,23 @@ int main(int argc, char* argv[]) {
 	ParseOptions(options, argc, argv);
 
 	util::PCQueue<Task> tasks(options.n_workers);
-	util::UnboundedSingleQueue<Future> futures;
+	util::UnboundedSingleQueue<PromisePtr> promises;
 
 	util::FixedArray<Worker> workers(options.n_workers);
 
 	for (int i = 0; i < options.n_workers; ++i)
 		workers.emplace_back(tasks, options.child_argv);
 
-	std::thread write(WriteOutput, STDOUT_FILENO, &futures);
+	std::thread write(WriteOutput, STDOUT_FILENO, &promises);
 
-	ReadInput(STDIN_FILENO, &tasks, &futures);
+	ReadInput(STDIN_FILENO, &tasks, &promises);
 
 	for (int i = 0; i < options.n_workers; ++i) {
-		Task task;
+		Task task{std::string(), nullptr};
 		tasks.ProduceSwap(task); // Empty task to tell InputToProcess to stop.
 	}
 
-	futures.Produce(Future()); // Empty future to tell WriteOutput to stop
+	promises.Produce(nullptr); // Empty future to tell WriteOutput to stop
 
 	int exit_code = 0;
 
