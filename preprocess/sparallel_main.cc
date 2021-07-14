@@ -101,6 +101,14 @@ void OutputFromProcess(util::scoped_fd process_fd, util::UnboundedSingleQueue<Pr
 			promise->set_exception(std::current_exception());
 		}
 	}
+
+	// Test if there is more output, and whether that output is not just a spurious
+	// newline.
+	util::StringPiece line;
+	if (process_out.ReadLineOrEOF(line) && !line.empty()) {
+		std::cerr << "Superfluous output from child process: " << line << std::endl;
+		std::abort();
+	}
 }
 
 
