@@ -29,9 +29,9 @@ void ReadInput(int from, util::PCQueue<Task> *tasks, util::UnboundedSingleQueue<
 			line.as_string(),
 			promise.get()	
 		};
-		tasks->ProduceSwap(task);
 
 		promises->Produce(std::move(promise));
+		tasks->ProduceSwap(task);
 	}
 }
 
@@ -56,8 +56,11 @@ void InputToProcess(util::PCQueue<Task> *tasks, util::scoped_fd process_in, util
 	Task task;
 
 	while (tasks->ConsumeSwap(task).output) { // empty output pointer marks end
-		in << task.input << '\n';
+		// Queue reading output before writing input because input might begin
+		// producing output before the full line is written, and if the reading
+		// thread hasn't started reading yet, buffers will overflow, bang, deadlock.
 		promises->Produce(task.output);
+		in << task.input << '\n';
 	}
 
 	promises->Produce(nullptr); // Tells OutputFromProcess to stop
