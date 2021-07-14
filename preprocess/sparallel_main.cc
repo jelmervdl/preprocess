@@ -43,7 +43,7 @@ struct Task {
 
 
 void ReadInput(int from, util::PCQueue<Task> *tasks, util::UnboundedSingleQueue<PromisePtr> *promises) {
-	util::FilePiece in(from);
+	util::FilePiece in(from, NULL, &std::cerr);
 
 	for (util::StringPiece line : in) {
 		PromisePtr promise(new Promise());
