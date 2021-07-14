@@ -8,6 +8,29 @@
 #include <unistd.h>
 #include <memory>
 
+/**
+ * Design (stars mark the blocking paths)
+ * 
+ *          ReadInput
+ *              |
+ *       +------+********+
+ *       |               *
+ * Promise queue     pair<Str,Promise*> queue
+ *       |               *
+ *       |           InputToProcess
+ *       |               *
+ *       |           +***+-----------+
+ *       |           *               |
+ *       |       (Process)     Promise* queue
+ *       |           *               |
+ *       |           +***+-----------+
+ *       *               *
+ *       *          OutputFromProcess
+ *       *
+ *  WriteOutput (blocks on individual promises)
+ */
+
+
 typedef std::promise<std::string> Promise;
 
 typedef std::unique_ptr<Promise> PromisePtr;
