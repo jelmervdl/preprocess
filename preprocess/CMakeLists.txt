@@ -26,6 +26,7 @@ set(EXE_LIST
   vocab
   warc_parallel
   qparallel
+  rparallel
 )
 
 set(ICU_EXE_LIST
@@ -54,6 +55,7 @@ target_link_libraries(shard ${PREPROCESS_LIBS} fields)
 target_link_libraries(substitute ${PREPROCESS_LIBS} fields)
 target_link_libraries(warc_parallel ${PREPROCESS_LIBS} warc captive_child)
 target_link_libraries(qparallel ${PREPROCESS_LIBS} captive_child)
+target_link_libraries(rparallel ${PREPROCESS_LIBS} captive_child)
 
 if(USE_ICU)
   foreach(exe ${ICU_EXE_LIST})
