@@ -9,6 +9,10 @@
 #include <memory>
 
 /**
+ * Queue-based line scheduler. Similar to `parallel -k --pipe --line-buffer`,
+ * but way faster, with progress bar, native gzip support for input, and able
+ * to put all that expensive memory to use.
+ * 
  * Design (stars mark the blocking paths)
  * 
  *          ReadInput
@@ -25,7 +29,7 @@
  *       |           *               |
  *       |           +***+-----------+
  *       *               *
- *       *          OutputFromProcess
+ *       *          OutputFromProcess (fulfils promises)
  *       *
  *  WriteOutput (blocks on individual promises)
  */
@@ -142,7 +146,8 @@ struct Options {
 
 
 int Usage(char** argv) {
-	std::cerr << "Usage: " << argv[0] << " [-j 4] child [args..]" << std::endl;
+	std::cerr << "Usage: " << argv[0] << " [-j 4] child [args..]"
+	          << "Queue-based line 'scheduler'" << std::endl;
 	return 1;
 }
 
